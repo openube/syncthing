@@ -130,6 +130,24 @@ func Verify(r io.Reader, blocksize int, blocks []protocol.BlockInfo) error {
 	return nil
 }
 
+func VerifyBuffer(buf []byte, block protocol.BlockInfo) error {
+	if len(buf) != int(block.Size) {
+		return fmt.Errorf("length mismatch %d != %d", len(buf), block.Size)
+	}
+	hf := sha256.New()
+	_, err := hf.Write(buf)
+	if err != nil {
+		return err
+	}
+	hash := hf.Sum(nil)
+
+	if !bytes.Equal(hash, block.Hash) {
+		return fmt.Errorf("hash mismatch %x != %x", hash, block.Hash)
+	}
+
+	return nil
+}
+
 // BlockEqual returns whether two slices of blocks are exactly the same hash
 // and index pair wise.
 func BlocksEqual(src, tgt []protocol.BlockInfo) bool {

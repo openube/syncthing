@@ -707,20 +707,9 @@ nextFile:
 }
 
 func (p *Puller) pullerRoutine(in <-chan pullBlockState, out chan<- *sharedPullerState) {
-nextBlock:
 	for state := range in {
 		if state.failed() != nil {
-			continue nextBlock
-		}
-
-		// Select the least busy device to pull the block from. If we found no
-		// feasible device at all, fail the block (and in the long run, the
-		// file).
-		potentialDevices := p.model.availability(p.folder, state.file.Name)
-		selected := activity.leastBusy(potentialDevices)
-		if selected == (protocol.DeviceID{}) {
-			state.earlyClose("pull", errNoDevice)
-			continue nextBlock
+			continue
 		}
 
 		// Get an fd to the temporary file. Tehcnically we don't need it until
@@ -728,28 +717,53 @@ nextBlock:
 		// no point in issuing the request to the network.
 		fd, err := state.tempFile()
 		if err != nil {
-			continue nextBlock
+			continue
 		}
 
-		// Fetch the block, while marking the selected device as in use so that
-		// leastBusy can select another device when someone else asks.
-		activity.using(selected)
-		buf, err := p.model.requestGlobal(selected, p.folder, state.file.Name, state.block.Offset, int(state.block.Size), state.block.Hash)
-		activity.done(selected)
-		if err != nil {
-			state.earlyClose("pull", err)
-			continue nextBlock
-		}
+		var lastError error
+		potentialDevices := p.model.availability(p.folder, state.file.Name)
+		for {
+			// Select the least busy device to pull the block from. If we found no
+			// feasible device at all, fail the block (and in the long run, the
+			// file).
+			selected := activity.leastBusy(potentialDevices)
+			if selected == (protocol.DeviceID{}) {
+				if lastError != nil {
+					state.earlyClose("pull", lastError)
+				} else {
+					state.earlyClose("pull", errNoDevice)
+				}
+				break
+			}
 
-		// Save the block data we got from the cluster
-		_, err = fd.WriteAt(buf, state.block.Offset)
-		if err != nil {
-			state.earlyClose("save", err)
-			continue nextBlock
-		}
+			potentialDevices = removeDevice(potentialDevices, selected)
 
-		state.pullDone()
-		out <- state.sharedPullerState
+			// Fetch the block, while marking the selected device as in use so that
+			// leastBusy can select another device when someone else asks.
+			activity.using(selected)
+			buf, lastError := p.model.requestGlobal(selected, p.folder, state.file.Name, state.block.Offset, int(state.block.Size), state.block.Hash)
+			activity.done(selected)
+			if lastError != nil {
+				continue
+			}
+
+			// Verify that the received block matches the desired hash, if not
+			// try pulling it from another device.
+			lastError = scanner.VerifyBuffer(buf, state.block)
+			if lastError != nil {
+				continue
+			}
+
+			// Save the block data we got from the cluster
+			_, err = fd.WriteAt(buf, state.block.Offset)
+			if err != nil {
+				state.earlyClose("save", err)
+			} else {
+				state.pullDone()
+				out <- state.sharedPullerState
+			}
+			break
+		}
 	}
 }
 
@@ -867,4 +881,14 @@ func invalidateFolder(cfg *config.Configuration, folderID string, err error) {
 			return
 		}
 	}
+}
+
+func removeDevice(devices []protocol.DeviceID, device protocol.DeviceID) []protocol.DeviceID {
+	for i := range devices {
+		if devices[i] == device {
+			devices[i] = devices[len(devices)-1]
+			return devices[:len(devices)-1]
+		}
+	}
+	return devices
 }
