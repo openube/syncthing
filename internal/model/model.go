@@ -1338,7 +1338,7 @@ func (m *Model) RemoteLocalVersion(folder string) uint64 {
 
 func (m *Model) availability(folder string, file string) []protocol.DeviceID {
 	// Acquire this lock first, as the value returned from foldersFiles can
-	// gen heavily modified on Close()
+	// get heavily modified on Close()
 	m.pmut.RLock()
 	defer m.pmut.RUnlock()
 
